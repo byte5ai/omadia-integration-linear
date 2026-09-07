@@ -1,0 +1,117 @@
+schema_version: "1"
+
+# ===========================================================================
+# @omadia/integration-linear — the Linear connection
+# ---------------------------------------------------------------------------
+# A `kind: integration` plugin: it holds the credential for one Linear
+# workspace and publishes the Linear API capability `linear.api@1`. It carries
+# no toolkit, no prompt and no routes — the Linear agent
+# (`@omadia/agent-linear`) consumes the capability and owns the tools.
+#
+# Sources of truth (do not guess):
+#   Runtime contract  omadia/middleware/packages/plugin-api/src/pluginContext.ts
+#   Packaging guide   omadia/docs/creating-plugins.md
+#   Client contract   ./INTEGRATION.md
+# ===========================================================================
+
+identity:
+  id: "@omadia/integration-linear" # === package.json "name"
+  kind: "integration"
+  domain: "linear"
+  name: "Linear"
+  version: "0.1.0" # === package.json "version"
+  # Locale map, not a bare string (#885): a bare string is read as English, so
+  # German in this slot would surface as the English description in the Hub.
+  description:
+    en: "Connects Omadia to one Linear workspace with a personal API key and publishes the Linear API capability, so other plugins can read and change issues without holding the credential themselves."
+    de: "Verbindet Omadia über einen persönlichen API-Schlüssel mit einem Linear-Arbeitsbereich und stellt die Linear-API als Fähigkeit bereit, damit andere Plugins Aufgaben lesen und ändern können, ohne den Zugangsschlüssel selbst zu kennen."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "MIT"
+  categories:
+    - "integration"
+    - "productivity"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+# One activation per orchestrator is safe: the client is a stateless request
+# builder over ctx.http.fetch and holds no cross-instance state.
+multi_instance: true
+privacy_class: "strict"
+
+# No parent integration — this plugin IS the credential holder.
+depends_on: []
+
+lifecycle:
+  entry: "dist/plugin.js" # exports `activate(ctx)` → { close }
+  uninstall_policy:
+    entities: "keep"
+    memory: "delete"
+    secrets: "delete"
+
+setup:
+  guide:
+    en: "Create a personal API key in Linear under Settings → Security & access → Personal API keys, then paste it below. The key acts as its owner, so issues created through Omadia are attributed to that person."
+    de: "Legen Sie in Linear unter Einstellungen, Sicherheit und Zugriff einen persönlichen API-Schlüssel an und fügen Sie ihn unten ein. Der Schlüssel handelt im Namen seines Besitzers, deshalb erscheinen über Omadia angelegte Aufgaben unter diesem Namen."
+  fields:
+    - key: "linear_api_key"
+      type: "secret"
+      required: true
+      label:
+        en: "Linear API key"
+        de: "Linear-API-Schlüssel"
+      help:
+        en: "Personal API key from Settings → Security & access → Personal API keys. Revoke and re-paste to rotate."
+        de: "Persönlicher Schlüssel aus den Linear-Einstellungen unter Sicherheit und Zugriff. Zum Wechseln alten Schlüssel widerrufen und neuen hier einfügen."
+      placeholder: "lin_api_..."
+  # `self_test: true` obliges the plugin to ship an `onConfigure` hook, and
+  # core does not call that hook yet (nothing in middleware/ references
+  # `onConfigure` — the manifests that declare it are aspirational). The
+  # connection is verified in `activate()` instead: a single `viewer` query,
+  # logged and non-fatal, so a Linear outage cannot block a core boot. See
+  # src/plugin.ts.
+  self_test: false
+
+# The Linear API capability (CONTEXT.md). Provider-side name + major must
+# match what `ctx.services.provide` registers; consumers declare
+# `requires: ["linear.api@^1"]`.
+provides:
+  - "linear.api@1"
+
+# Lets a builder agent discover the method-bearing type behind the service
+# instead of guessing it. Same convention as integration-odoo.
+service_types:
+  - service: "linear.api"
+    type:
+      from: "@omadia/integration-linear"
+      name: "LinearClient"
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    # `ctx.http` only exists when this list is non-empty, and every GraphQL
+    # call goes through it — the allow-list is the whole egress surface.
+    outbound:
+      - "api.linear.app"
+  # No scratch-directory block. Core gates the scratch accessor on a
+  # TOP-LEVEL `filesystem:` key; `permissions.filesystem` is retired and the
+  # manifest loader warns about it and ignores it. This plugin holds no state
+  # on disk, so neither key is wanted.
+
+integrations:
+  - id: "linear_graphql"
+    kind: "http"
+    target: "Linear GraphQL API (POST https://api.linear.app/graphql) — issue reads plus issue/comment writes"
+    auth_from: "linear_api_key"
+    docs: "https://linear.app/developers/graphql"
+
+jobs: []

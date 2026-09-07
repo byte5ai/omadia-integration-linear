@@ -1,0 +1,34 @@
+{
+  "name": "@omadia/integration-linear",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/plugin.js",
+  "types": "dist/plugin.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/plugin.d.ts",
+      "default": "./dist/plugin.js"
+    }
+  },
+  "description": "Linear connection for the Omadia harness — holds the personal API key and publishes the Linear API capability 'linear.api@1' (hand-written GraphQL client over ctx.http.fetch, zero runtime dependencies).",
+  "license": "MIT",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test.mjs",
+    "build": "npm run typecheck && npm test && node scripts/build-zip.mjs",
+    "build:only": "node scripts/build-zip.mjs",
+    "clean": "rm -rf dist out .test-build *.tsbuildinfo"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
