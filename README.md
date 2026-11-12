@@ -8,6 +8,8 @@ This is one half of the Linear Integration. The other half is
 `@omadia/agent-linear`, which carries the tools and the prompt and consumes
 this capability. This package has no tools, no prompt and no routes.
 
+- **Install, use, known limits, troubleshooting**: the agent's README
+  (`@omadia/agent-linear`) — install this package first, then the agent.
 - **Client contract** (what consumers read): [INTEGRATION.md](./INTEGRATION.md)
 - **Vocabulary**: `CONTEXT.md` in the source repository (not shipped in the
   plugin package — the zip carries only runtime artefacts)
@@ -30,9 +32,11 @@ Whether the stored key works shows in the Store, not only in a log:
   plugin's `verifyConnection` export: one `viewer` query, four seconds at
   most. A key Linear refuses turns the plugin's badge red and puts a banner on
   its page.
-- The plugin's page has a "check connection" button that runs the same check
-  on request and answers in place: works (with the name of the key's owner),
-  rejected, or could not be checked.
+- The plugin's page has a button **Verbindung testen** that runs the same
+  check on request and answers in place: "Verbindung funktioniert — <name of
+  the key's owner>", "Das Zielsystem hat die Zugangsdaten abgelehnt", or that
+  the connection could not be checked. In a workspace whose owner has no
+  display name, the name shown is the owner's e-mail address.
 - Between two checks the requests themselves keep the status current: one
   that Linear refuses for the key sets the status to error, the next one that
   succeeds clears it.
@@ -70,6 +74,12 @@ dependencies**. (`@linear/sdk` becomes worth reconsidering only for
 
 ## Setup
 
+You need a Linear workspace and a **personal API key** of a member of it
+(Linear → Settings → Security & access → Personal API keys). Linear's Free
+plan is enough. A key restricted to reading passes the connection check, but
+every change fails at Linear; set the agent's write mode to "off" for such a
+key.
+
 One field, in the install drawer:
 
 | Field | Type | Where it comes from |
@@ -77,8 +87,14 @@ One field, in the install drawer:
 | `linear_api_key` | secret, required | Linear → Settings → Security & access → Personal API keys |
 
 The key acts as its owner: issues created through omadia are attributed to that
-person, and "assign it to me" resolves to them. Rotating means revoking the old
-key in Linear and pasting a new one here.
+person, and "assign it to me" resolves to them.
+
+**Changing the key:** open the connection's page in the Store → section
+**Setup-Felder editieren** → field `linear_api_key` (shown as "gespeichert ·
+neu eintippen zum Überschreiben") → type the new key → **Speichern**. The
+plugin is reactivated, the agent with it, and the connection is checked
+again. To rotate, create the new key in Linear, paste it here, then revoke
+the old one.
 
 ## Build and install
 
@@ -92,8 +108,24 @@ failing test cannot produce an uploadable zip. Hub versions are immutable, so a
 bad artefact is a permanent one. `npm run build:only` skips the gate on
 purpose, for iterating on packaging.
 
-Install the zip through **Admin → Store → tab "Lokal" → upload**, or via the
-API:
+Install the zip in the web UI:
+
+1. Open the **Store** (`/store`), choose **Lokal** in the source switch at the
+   top (Registry / Lokal / Installiert).
+2. In the box "Neues Agent-Package hochladen." → **Datei wählen** → the zip.
+   Expect "✓ Hochgeladen"; the card **Linear** (kind integration) appears.
+3. Install the card, paste the key into **Linear-API-Schlüssel** in the
+   drawer's "Einrichtung", **Installation bestätigen**.
+4. On the plugin's page press **Verbindung testen**.
+
+**Updating:** upload a newer zip the same way. It replaces the installed
+version, carries the settings over and reactivates the plugin and the agent
+that depends on it; there is no install step. A version that is already
+installed, or an older one, is rejected. When a release changes the
+capability version (`linear.api@1` → `@2`), upload this package before the
+agent.
+
+Or via the API:
 
 ```bash
 POST /api/v1/install/plugins/@omadia%2Fintegration-linear
