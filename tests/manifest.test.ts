@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -99,6 +99,26 @@ describe('manifest.yaml ↔ code', () => {
   });
 });
 
+describe('host API', () => {
+  // `compat.core` starts at 1.0, and the connection check arrived in a later
+  // host. A named import of a runtime export an older host lacks fails the
+  // whole module at link time, so the host package may be imported for its
+  // types only.
+  for (const rel of readdirSync(join(root, 'src')).filter((f) => f.endsWith('.ts'))) {
+    it(`src/${rel} imports @omadia/plugin-api for types only`, () => {
+      const text = readFileSync(join(root, 'src', rel), 'utf8');
+      const imports = [...text.matchAll(/^import\s+(type\s+)?[^;]*?from\s+'@omadia\/plugin-api';/gms)];
+      for (const match of imports) {
+        assert.ok(match[1], `src/${rel} has a runtime import: ${match[0]}`);
+      }
+    });
+  }
+
+  it('keeps the range of hosts it loads on', () => {
+    assert.equal(scalar('core'), '>=1.0 <2.0');
+  });
+});
+
 describe('shipped files', () => {
   // The internal working layer must never be referenced from anything that
   // leaves this repository. See the repo's own rule on it.
@@ -110,6 +130,7 @@ describe('shipped files', () => {
     'CONTEXT.md',
     'tsconfig.json',
     'src/client.ts',
+    'src/connectionStatus.ts',
     'src/plugin.ts',
     'scripts/build-zip.mjs',
     'scripts/test.mjs',

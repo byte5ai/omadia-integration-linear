@@ -57,7 +57,8 @@ Two rules that fail silently rather than loudly if you break them:
 - **Do not construct `createLinearClient` yourself** in a consumer. The key
   lives in this plugin's vault namespace and the outbound allow-list
   (`api.linear.app`) is granted to this plugin only — a client built elsewhere
-  either has no credential or no egress.
+  either has no credential or no egress. It would also report nothing to the
+  connection status (below).
 
 ## `LinearClient` — verbatim
 
@@ -221,6 +222,38 @@ Exported constants: `LINEAR_GRAPHQL_ENDPOINT`, `DEFAULT_ISSUE_LIMIT` (25),
   prepared-write/preview/commit flow that fronts them for users belongs in the
   consuming agent, not here — this layer has no conversation to preview into.
 
+## Connection status
+
+Whether the stored key works is visible to the operator in the Store: a red
+badge and a banner on the plugin's page when Linear refused the key, and a
+"check connection" button that answers on request. Two things feed it.
+
+- **The connection check.** The plugin exports `verifyConnection(ctx)` next to
+  `activate`. The host runs it after every activation and when the operator
+  presses the button. It sends one `viewer` query and answers:
+
+  | Verdict | When |
+  |---|---|
+  | `connected` | Linear answered with the key's owner; their name is the `detail` |
+  | `rejected`, cause `http_401` | HTTP 401 |
+  | `rejected`, cause `http_403_auth` | HTTP 403 whose body names authentication |
+  | `rejected`, cause `protocol_auth_failure` | an authentication error in `errors[]` under any other status, HTTP 200 included |
+  | `inconclusive` | everything else: timeout (4 s), 5xx, rate limit, network failure, a 403 that names no authentication, an answer that is not GraphQL, no key stored |
+
+  An inconclusive check changes nothing; its reason is in the plugin's log.
+
+- **Every request made through `linear.api`.** A request Linear refuses for
+  the key (the `LinearAuthError` below) sets the status to error at once, so a
+  key revoked in Linear shows up without anyone pressing the button. The next
+  request that succeeds clears it again.
+
+`activate()` itself sends nothing to Linear.
+
+What this means for a consumer: nothing to call and nothing to report. While
+the status is error, the host withholds the tools **this** plugin registers;
+it registers none, so whether a consumer's tools stay available is decided by
+the consumer's own status.
+
 ## Errors
 
 Every failure is one of these five. `LinearApiError` is the base, so a
@@ -232,15 +265,21 @@ class LinearApiError extends Error {
   readonly body: string | undefined;  // upstream body, truncated to 1000 chars
 }
 
-/** Key missing, revoked or malformed. Not retryable — the operator must
- *  paste a new key. Raised for HTTP 401 and for an authentication error
- *  that arrives under HTTP 200. */
-class LinearAuthError extends LinearApiError {}
+/** Linear refused the key: missing, revoked or malformed. Not retryable —
+ *  the operator must paste a new key. */
+class LinearAuthError extends LinearApiError {
+  /** 'http_401' | 'http_403_auth' | 'protocol_auth_failure' — the same three
+   *  cases as in the connection-check table above. */
+  readonly rejection: LinearAuthRejection;
+}
 
-/** Linear's request or complexity budget is spent. Linear reports this as
- *  HTTP 400 with `RATELIMITED` in the error extensions, NOT as HTTP 429. */
+/** Linear's request or complexity budget is spent. Linear answers with
+ *  HTTP 429, `RATELIMITED` in the error extensions and a `Retry-After`
+ *  header. */
 class LinearRateLimitError extends LinearApiError {
-  readonly resetAt: Date | undefined; // from x-ratelimit-requests-reset
+  /** When to try again: `Retry-After` counted from the arrival of the answer,
+   *  otherwise `x-ratelimit-requests-reset`, otherwise undefined. */
+  readonly resetAt: Date | undefined;
 }
 
 /** Linear answered with `errors[]` for any other reason. `message` joins
@@ -254,9 +293,13 @@ class LinearGraphQLError extends LinearApiError {
 class LinearMutationError extends LinearApiError {}
 ```
 
-`LinearRateLimitError` is checked before the HTTP status on purpose: Linear
-puts the real cause only in the extensions, so status alone would classify a
-throttled request as a generic bad request.
+`LinearRateLimitError` is raised for HTTP 429 whatever the body says, and for
+`RATELIMITED` in the extensions under any status — until 2026-11-05 Linear
+sent that body under HTTP 400. Compare by `err.name` rather than `instanceof`
+when the error crosses into another plugin's bundle.
+
+A 403 that names no authentication (a permission, a plan, a region) is a plain
+`LinearApiError`: it is not a verdict on the key.
 
 Two limits worth designing around: a personal API key is capped at roughly
 2,500 requests per hour, and the host's own `ctx.http` allows 60 requests per

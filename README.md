@@ -16,17 +16,48 @@ this capability. This package has no tools, no prompt and no routes.
 
 `activate(ctx)` reads `linear_api_key` from the plugin vault, builds a GraphQL
 client over the host's allow-listed `ctx.http.fetch`, and registers it as
-`linear.api`. It then fires a single `viewer` query as a connection check —
-detached and non-fatal, so a Linear outage cannot block a core boot. The result
-appears in the log as either
-
-```
-[linear] connection ok — key acts as ada (a1b2…)
-[linear] connection check FAILED — linear: API key rejected (HTTP 401)
-```
+`linear.api`. It sends nothing to Linear, so a Linear outage cannot fail an
+activation or slow a core boot.
 
 Egress is the one host `api.linear.app`, declared in
 `permissions.network.outbound`. There is no other network surface.
+
+## Connection status
+
+Whether the stored key works shows in the Store, not only in a log:
+
+- After every activation — install, boot, a changed key — core runs the
+  plugin's `verifyConnection` export: one `viewer` query, four seconds at
+  most. A key Linear refuses turns the plugin's badge red and puts a banner on
+  its page.
+- The plugin's page has a "check connection" button that runs the same check
+  on request and answers in place: works (with the name of the key's owner),
+  rejected, or could not be checked.
+- Between two checks the requests themselves keep the status current: one
+  that Linear refuses for the key sets the status to error, the next one that
+  succeeds clears it.
+
+Only an explicit refusal of the key counts as rejected — HTTP 401, a 403 that
+names authentication, or an authentication error inside the GraphQL answer. A
+timeout, a 5xx, a rate limit or an unreachable network is "could not be
+checked" and leaves the status as it was, because a red status also withholds
+a plugin's tools from the orchestrator. The reason for a check that could not
+decide is in the log:
+
+```
+[linear] connection ok — key acts as Ada Lovelace (a1b2…)
+[linear] connection check: Linear rejected the API key (http_401)
+[linear] connection check inconclusive — linear: HTTP 502
+```
+
+The check sends no badge text of its own. The plugin cannot see the operator's
+language, and the admin UI words each state itself; the price is that a
+working key shows as the absence of a red badge plus the answer of the button,
+not as a green badge.
+
+The host package `@omadia/plugin-api` is imported for its types only, so the
+plugin loads on every core in its `compat.core` range. A core that predates
+the connection check ignores the export.
 
 ## Why a hand-written GraphQL client
 
@@ -86,7 +117,8 @@ npm run typecheck
 
 Everything is offline. The client is driven against a mocked `ctx.http.fetch`,
 which pins the request the client builds and the way it maps each response —
-including Linear's three failure shapes. What no unit test here can pin is
+including Linear's failure shapes and the verdict the connection check draws
+from each. What no unit test here can pin is
 agreement with Linear's actual schema; that is what a manual pass against the
 `omadia-dev` workspace is for, and it should be run before this package is
 pointed at a real workspace.

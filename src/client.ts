@@ -55,22 +55,45 @@ export class LinearApiError extends Error {
 }
 
 /**
- * The API key is missing, revoked or malformed. Not retryable — the operator
- * has to paste a new key in the plugin's setup.
+ * Which explicit refusal of the API key Linear answered with. The three
+ * values are the host's connection-rejection causes, restated here so this
+ * file needs no host import.
+ *
+ * - `http_401` — the answer came under HTTP 401.
+ * - `http_403_auth` — HTTP 403 whose body names authentication itself. A 403
+ *   that names anything else (a permission, a plan) is not a verdict on the
+ *   key and stays a plain {@link LinearApiError}.
+ * - `protocol_auth_failure` — an authentication error inside `errors[]` under
+ *   any other status, HTTP 200 included.
+ */
+export type LinearAuthRejection = 'http_401' | 'http_403_auth' | 'protocol_auth_failure';
+
+/**
+ * Linear refused the API key: missing, revoked or malformed. Not retryable —
+ * the operator has to paste a new key in the plugin's setup.
  */
 export class LinearAuthError extends LinearApiError {
-  constructor(message: string, status: number, body?: string) {
+  /** The refusal Linear gave. What the connection status reports as its cause. */
+  public readonly rejection: LinearAuthRejection;
+
+  constructor(message: string, status: number, rejection: LinearAuthRejection, body?: string) {
     super(message, status, body);
     this.name = 'LinearAuthError';
+    this.rejection = rejection;
   }
 }
 
 /**
- * Linear's request or complexity budget is spent. Linear reports this as
- * HTTP 400 with `RATELIMITED` in the error extensions, not as 429.
+ * Linear's request or complexity budget is spent. Linear answers with
+ * HTTP 429, `RATELIMITED` in the error extensions and a `Retry-After` header.
+ * Until 2026-11-05 the same body came under HTTP 400; that shape is still
+ * recognised.
  */
 export class LinearRateLimitError extends LinearApiError {
-  /** When the budget refills, if Linear said so. */
+  /**
+   * When to try again, if Linear said so: `Retry-After` counted from the
+   * moment the answer arrived, otherwise the request budget's reset time.
+   */
   public readonly resetAt: Date | undefined;
 
   constructor(message: string, status: number, resetAt: Date | undefined, body?: string) {
@@ -264,11 +287,30 @@ export interface LinearClient {
 /** The `ctx.http.fetch` shape, restated so this file needs no host import. */
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
+/**
+ * Told what each request to Linear says about the API key. The connection
+ * uses it to keep its status current between two connection checks: a key
+ * revoked in Linear is first seen by an ordinary request.
+ *
+ * A throw from either method is swallowed. The outcome of a request never
+ * depends on its observer.
+ */
+export interface LinearConnectionObserver {
+  /** Linear refused the key. */
+  authRejected(rejection: LinearAuthRejection): void;
+  /** Linear accepted the key and answered with data. */
+  succeeded(): void;
+}
+
 export interface LinearClientOptions {
   /** Personal API key. Sent bare — Linear rejects a `Bearer` prefix. */
   readonly apiKey: string;
   /** Normally `ctx.http.fetch`, bound to the plugin's allow-list. */
   readonly fetch: FetchLike;
+  /** See {@link LinearConnectionObserver}. */
+  readonly observer?: LinearConnectionObserver;
+  /** Clock for turning `Retry-After` into a point in time. Defaults to `Date.now`. */
+  readonly now?: () => number;
 }
 
 // ---------------------------------------------------------------------------
@@ -522,7 +564,49 @@ function isAuthFailure(errors: readonly LinearGraphQLErrorEntry[]): boolean {
   return extensionSays(errors, 'authentication');
 }
 
-function readResetAt(res: Response): Date | undefined {
+/**
+ * Body markers of a 403 that refuses the credential rather than a permission,
+ * a plan or a region. The host applies the same list to every integration; a
+ * 403 that names none of them says nothing about the key.
+ */
+const AUTH_403_MARKERS = [
+  'unauthenticated',
+  'authentication',
+  'invalid_token',
+  'invalid api key',
+  'invalid x-api-key',
+];
+
+/** The refusal of the key one answer carries, or `undefined` when it carries none. */
+function authRejectionOf(
+  status: number,
+  bodyText: string,
+  errors: readonly LinearGraphQLErrorEntry[] | undefined,
+): LinearAuthRejection | undefined {
+  if (status === 401) return 'http_401';
+  if (status === 403) {
+    const body = bodyText.toLowerCase();
+    return AUTH_403_MARKERS.some((marker) => body.includes(marker)) ? 'http_403_auth' : undefined;
+  }
+  return errors !== undefined && isAuthFailure(errors) ? 'protocol_auth_failure' : undefined;
+}
+
+/**
+ * `Retry-After` first: it is the wait Linear asks for, in seconds, and counts
+ * from the moment the answer arrived. An HTTP date is accepted as well, since
+ * the header allows both. Without the header the request budget's reset time
+ * (epoch milliseconds) is the nearest thing Linear sends.
+ */
+function readResetAt(res: Response, now: number): Date | undefined {
+  const retryAfter = res.headers.get('retry-after')?.trim();
+  if (retryAfter) {
+    if (/^\d+(\.\d+)?$/.test(retryAfter)) {
+      return new Date(now + Math.ceil(Number(retryAfter) * 1_000));
+    }
+    const at = Date.parse(retryAfter);
+    if (Number.isFinite(at)) return new Date(at);
+  }
+
   const raw = res.headers.get('x-ratelimit-requests-reset');
   if (!raw) return undefined;
   const ms = Number(raw);
@@ -549,12 +633,27 @@ function withoutUndefined<T extends Record<string, unknown>>(
 // ---------------------------------------------------------------------------
 
 export function createLinearClient(opts: LinearClientOptions): LinearClient {
+  const now = opts.now ?? Date.now;
+
+  /** Tell the observer; whatever it does stays out of the request's outcome. */
+  function tell(notify: (observer: LinearConnectionObserver) => void): void {
+    if (opts.observer === undefined) return;
+    try {
+      notify(opts.observer);
+    } catch {
+      // Swallowed on purpose: see LinearConnectionObserver.
+    }
+  }
+
   /**
    * One request, one place where an upstream answer becomes either data or a
-   * typed error. Ordering matters: `errors[]` is inspected before the HTTP
-   * status, because Linear reports throttling as HTTP 400 with the real cause
-   * only in the extensions, and an authentication failure can arrive under
-   * HTTP 200.
+   * typed error. The order of the checks is the classification:
+   *
+   * 1. Throttling — HTTP 429 whatever the body says, or `RATELIMITED` in the
+   *    extensions under any status (the shape Linear used under HTTP 400).
+   * 2. A refused key — see {@link LinearAuthRejection}. It can arrive under
+   *    HTTP 200, which is why `errors[]` is read before the status decides.
+   * 3. Any other `errors[]`, then any other non-2xx.
    */
   async function request<T>(
     query: string,
@@ -580,33 +679,37 @@ export function createLinearClient(opts: LinearClientOptions): LinearClient {
       payload = undefined;
     }
 
-    const errors = payload?.errors;
-    if (errors && errors.length > 0) {
-      const body = truncate(text);
-      if (isRateLimited(errors)) {
-        throw new LinearRateLimitError(
-          `linear: rate limit or complexity budget exceeded — ${first(errors)?.message ?? 'no detail'}`,
-          res.status,
-          readResetAt(res),
-          body,
-        );
-      }
-      if (res.status === 401 || isAuthFailure(errors)) {
-        throw new LinearAuthError(
-          `linear: API key rejected — ${first(errors)?.message ?? 'no detail'}`,
-          res.status,
-          body,
-        );
-      }
-      throw new LinearGraphQLError(errors, res.status, body);
+    const errors = payload?.errors && payload.errors.length > 0 ? payload.errors : undefined;
+    const detail = first(errors ?? [])?.message ?? `HTTP ${String(res.status)}`;
+
+    if (res.status === 429 || (errors !== undefined && isRateLimited(errors))) {
+      throw new LinearRateLimitError(
+        `linear: rate limit or complexity budget exceeded — ${detail}`,
+        res.status,
+        readResetAt(res, now()),
+        truncate(text),
+      );
+    }
+
+    const rejection = authRejectionOf(res.status, text, errors);
+    if (rejection !== undefined) {
+      tell((observer) => {
+        observer.authRejected(rejection);
+      });
+      throw new LinearAuthError(
+        `linear: API key rejected — ${detail}`,
+        res.status,
+        rejection,
+        truncate(text),
+      );
+    }
+
+    if (errors !== undefined) {
+      throw new LinearGraphQLError(errors, res.status, truncate(text));
     }
 
     if (!res.ok) {
-      const body = truncate(text);
-      if (res.status === 401) {
-        throw new LinearAuthError('linear: API key rejected (HTTP 401)', 401, body);
-      }
-      throw new LinearApiError(`linear: HTTP ${String(res.status)}`, res.status, body);
+      throw new LinearApiError(`linear: HTTP ${String(res.status)}`, res.status, truncate(text));
     }
 
     if (payload === undefined || payload.data === undefined || payload.data === null) {
@@ -626,6 +729,9 @@ export function createLinearClient(opts: LinearClientOptions): LinearClient {
     // having none, for drift that a removed field already surfaces as a
     // GraphQL error. The residual risk is a field whose TYPE changed under a
     // name that stayed — worth revisiting if that ever bites.
+    tell((observer) => {
+      observer.succeeded();
+    });
     return { data: payload.data as T, status: res.status };
   }
 

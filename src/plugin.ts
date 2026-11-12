@@ -1,6 +1,11 @@
 import type { PluginContext } from '@omadia/plugin-api';
 
 import { createLinearClient, type LinearClient } from './client.js';
+import {
+  CallTimeStatusReporter,
+  LINEAR_API_KEY_SECRET,
+  verifyConnection,
+} from './connectionStatus.js';
 
 /**
  * `@omadia/integration-linear` — the Linear connection.
@@ -18,9 +23,16 @@ import { createLinearClient, type LinearClient } from './client.js';
  * `linear_api_key` as a setup field of its own — a redeclared field silently
  * overrides the parent's value.
  *
- * Lifecycle budgets: `activate()` has 10 s, `close()` has 5 s. Both are met
- * with room to spare — activation builds one object and registers one service;
- * the connection check runs detached (see below).
+ * The module has two exports the host calls:
+ *
+ * - `activate(ctx)` builds the client and publishes it. It sends nothing to
+ *   Linear, so a Linear outage cannot fail an activation or slow a boot.
+ * - `verifyConnection(ctx)` answers whether the stored key works. The host
+ *   runs it after every activation and on the operator's request, and shows
+ *   the verdict in the Store. See src/connectionStatus.ts.
+ *
+ * Lifecycle budgets: `activate()` has 10 s, `close()` has 5 s, the connection
+ * check 5 s.
  *
  * The client contract consumers read is INTEGRATION.md.
  */
@@ -30,35 +42,6 @@ export const LINEAR_API_SERVICE_NAME = 'linear.api';
 
 export interface LinearIntegrationHandle {
   close(): Promise<void>;
-  /**
-   * Resolves when the connection check below has finished, whatever its
-   * outcome — it never rejects. Exposed because the alternative is work that
-   * activation starts and nothing can observe: the test for it would have to
-   * guess at a number of event-loop ticks, which is a flake, not a test.
-   */
-  readonly connectionCheck: Promise<void>;
-}
-
-/**
- * One `viewer` query, logged, never thrown.
- *
- * Not awaited by `activate()`, because a blocking check would put a third
- * party's availability on the critical path of every core boot — a Linear
- * outage would then read as "the plugin is broken". What the operator needs is
- * the answer visible right after pasting a key, and a log line delivers that
- * without making activation depend on it. `setup.self_test` stays false in the
- * manifest: the `onConfigure` hook it obliges a plugin to ship is declared in
- * the schema but not yet invoked by core.
- */
-async function checkConnection(ctx: PluginContext, client: LinearClient): Promise<void> {
-  try {
-    const viewer = await client.viewer();
-    ctx.log(`connection ok — key acts as ${viewer.displayName} (${viewer.id})`);
-  } catch (err: unknown) {
-    ctx.log(
-      `connection check FAILED — ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
 }
 
 export async function activate(ctx: PluginContext): Promise<LinearIntegrationHandle> {
@@ -74,7 +57,7 @@ export async function activate(ctx: PluginContext): Promise<LinearIntegrationHan
     );
   }
 
-  const apiKey = await ctx.secrets.require('linear_api_key');
+  const apiKey = await ctx.secrets.require(LINEAR_API_KEY_SECRET);
 
   const client = createLinearClient({
     apiKey,
@@ -82,27 +65,27 @@ export async function activate(ctx: PluginContext): Promise<LinearIntegrationHan
     // detached from its object is a `this`-binding bug waiting for the host to
     // implement the accessor as a class instead of an object literal.
     fetch: (url, init) => http.fetch(url, init),
+    // The connection check runs on activation and on request only. Between
+    // the two, the requests themselves say whether Linear still takes the key.
+    observer: new CallTimeStatusReporter(ctx.status, (message) => {
+      ctx.log(message);
+    }),
   });
 
   const disposeClient = ctx.services.provide<LinearClient>(LINEAR_API_SERVICE_NAME, client);
   ctx.log(`service '${LINEAR_API_SERVICE_NAME}' published`);
 
-  const connectionCheck = checkConnection(ctx, client);
-
   return {
-    connectionCheck,
     async close(): Promise<void> {
       ctx.log('deactivating linear connection');
-      // Deliberately not awaiting `connectionCheck`: close() has a 5 s budget
-      // and a request to an unreachable host can outlive it. The check cannot
-      // reject and touches nothing after activation, so leaving it to settle
-      // on its own is safe.
       disposeClient();
     },
   };
 }
 
-export default { activate };
+export { verifyConnection };
+
+export default { activate, verifyConnection };
 
 // The capability's type surface, re-exported so a consumer can write
 // `import type { LinearClient } from '@omadia/integration-linear'` — the path
@@ -123,9 +106,11 @@ export {
 export type {
   CreateIssueInput,
   FetchLike,
+  LinearAuthRejection,
   LinearClient,
   LinearClientOptions,
   LinearComment,
+  LinearConnectionObserver,
   LinearGraphQLErrorEntry,
   LinearIssue,
   LinearIssueDetail,

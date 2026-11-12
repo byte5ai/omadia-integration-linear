@@ -19,7 +19,7 @@ identity:
   kind: "integration"
   domain: "linear"
   name: "Linear"
-  version: "0.1.0" # === package.json "version"
+  version: "0.2.0" # === package.json "version"
   # Locale map, not a bare string (#885): a bare string is read as English, so
   # German in this slot would surface as the English description in the Hub.
   description:
@@ -47,7 +47,7 @@ privacy_class: "strict"
 depends_on: []
 
 lifecycle:
-  entry: "dist/plugin.js" # exports `activate(ctx)` → { close }
+  entry: "dist/plugin.js" # exports `activate(ctx)` → { close } and `verifyConnection(ctx)`
   uninstall_policy:
     entities: "keep"
     memory: "delete"
@@ -68,12 +68,11 @@ setup:
         en: "Personal API key from Settings → Security & access → Personal API keys. Revoke and re-paste to rotate."
         de: "Persönlicher Schlüssel aus den Linear-Einstellungen unter Sicherheit und Zugriff. Zum Wechseln alten Schlüssel widerrufen und neuen hier einfügen."
       placeholder: "lin_api_..."
-  # `self_test: true` obliges the plugin to ship an `onConfigure` hook, and
-  # core does not call that hook yet (nothing in middleware/ references
-  # `onConfigure` — the manifests that declare it are aspirational). The
-  # connection is verified in `activate()` instead: a single `viewer` query,
-  # logged and non-fatal, so a Linear outage cannot block a core boot. See
-  # src/plugin.ts.
+  # Whether the key works is answered by the `verifyConnection` export, which
+  # core runs after every activation and on the operator's request and shows
+  # in the Store — see src/connectionStatus.ts. `self_test: true` is a
+  # different mechanism: it obliges the plugin to ship an `onConfigure` hook,
+  # which core does not call.
   self_test: false
 
 # The Linear API capability (CONTEXT.md). Provider-side name + major must
@@ -102,10 +101,8 @@ permissions:
     # call goes through it — the allow-list is the whole egress surface.
     outbound:
       - "api.linear.app"
-  # No scratch-directory block. Core gates the scratch accessor on a
-  # TOP-LEVEL `filesystem:` key; `permissions.filesystem` is retired and the
-  # manifest loader warns about it and ignores it. This plugin holds no state
-  # on disk, so neither key is wanted.
+  # No `filesystem:` block (the scratch directory is granted under
+  # `permissions.filesystem.scratch`): this plugin holds no state on disk.
 
 integrations:
   - id: "linear_graphql"

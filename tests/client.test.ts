@@ -86,12 +86,30 @@ function sentHeaders(mock: Mock, n = 0): Record<string, string> {
   return (call.init?.headers ?? {}) as Record<string, string>;
 }
 
+/** The fixed "now" the client is given, so a `Retry-After` wait has a known end. */
+const NOW = Date.UTC(2026, 10, 12, 9, 0, 0);
+
 let mock: Mock;
 let client: LinearClient;
+/** What the client told its observer, in order. */
+let observed: string[];
 
 beforeEach(() => {
   mock = createMock();
-  client = createLinearClient({ apiKey: API_KEY, fetch: (u, i) => mock.fetch(u, i) });
+  observed = [];
+  client = createLinearClient({
+    apiKey: API_KEY,
+    fetch: (u, i) => mock.fetch(u, i),
+    now: () => NOW,
+    observer: {
+      authRejected: (rejection) => {
+        observed.push(`rejected:${rejection}`);
+      },
+      succeeded: () => {
+        observed.push('succeeded');
+      },
+    },
+  });
 });
 
 describe('request shape', () => {
@@ -447,6 +465,24 @@ describe('error mapping', () => {
       (err: unknown) => {
         assert.ok(err instanceof LinearAuthError);
         assert.equal(err.status, 401);
+        assert.equal(err.rejection, 'http_401');
+        return true;
+      },
+    );
+  });
+
+  it('names 401 as the refusal even when the body carries a GraphQL authentication error', async () => {
+    mock.push(
+      { errors: [{ message: 'Authentication required', extensions: { code: 'AUTHENTICATION_ERROR' } }] },
+      { status: 401 },
+    );
+
+    await assert.rejects(
+      () => client.viewer(),
+      (err: unknown) => {
+        assert.ok(err instanceof LinearAuthError);
+        assert.equal(err.rejection, 'http_401');
+        assert.match(err.message, /Authentication required/);
         return true;
       },
     );
@@ -457,7 +493,43 @@ describe('error mapping', () => {
       errors: [{ message: 'Authentication required', extensions: { type: 'authentication error' } }],
     });
 
-    await assert.rejects(() => client.viewer(), (err: unknown) => err instanceof LinearAuthError);
+    await assert.rejects(
+      () => client.viewer(),
+      (err: unknown) => {
+        assert.ok(err instanceof LinearAuthError);
+        assert.equal(err.rejection, 'protocol_auth_failure');
+        return true;
+      },
+    );
+  });
+
+  it('raises LinearAuthError on a 403 whose body names authentication', async () => {
+    mock.pushRaw('{"error":"Invalid API key"}', { status: 403 });
+
+    await assert.rejects(
+      () => client.viewer(),
+      (err: unknown) => {
+        assert.ok(err instanceof LinearAuthError);
+        assert.equal(err.status, 403);
+        assert.equal(err.rejection, 'http_403_auth');
+        return true;
+      },
+    );
+  });
+
+  it('keeps a 403 that names no authentication a plain API error', async () => {
+    // A 403 for a permission, a plan or a region is not a verdict on the key.
+    mock.pushRaw('{"error":"not available in your region"}', { status: 403 });
+
+    await assert.rejects(
+      () => client.viewer(),
+      (err: unknown) => {
+        assert.ok(err instanceof LinearApiError);
+        assert.ok(!(err instanceof LinearAuthError));
+        assert.equal(err.status, 403);
+        return true;
+      },
+    );
   });
 
   it('raises LinearAuthError when the reason is in extensions.code instead of type', async () => {
@@ -480,7 +552,115 @@ describe('error mapping', () => {
     );
   });
 
-  it('raises LinearRateLimitError for the HTTP 400 + RATELIMITED shape', async () => {
+  it('raises LinearRateLimitError for HTTP 429 with the RATELIMITED body', async () => {
+    mock.push(
+      {
+        errors: [
+          {
+            message: 'Rate limit exceeded',
+            extensions: { code: 'RATELIMITED', type: 'ratelimited' },
+          },
+        ],
+      },
+      { status: 429, headers: { 'retry-after': '30' } },
+    );
+
+    await assert.rejects(
+      () => client.searchIssues({}),
+      (err: unknown) => {
+        assert.ok(err instanceof LinearRateLimitError);
+        assert.equal(err.status, 429);
+        assert.match(err.message, /Rate limit exceeded/);
+        assert.equal(err.resetAt?.getTime(), NOW + 30_000);
+        return true;
+      },
+    );
+  });
+
+  it('raises LinearRateLimitError for HTTP 429 without a parseable body', async () => {
+    mock.pushRaw('<html>Too Many Requests</html>', { status: 429, headers: { 'retry-after': '12' } });
+
+    await assert.rejects(
+      () => client.teams(),
+      (err: unknown) => {
+        assert.ok(err instanceof LinearRateLimitError);
+        assert.equal(err.status, 429);
+        assert.match(err.message, /HTTP 429/);
+        assert.equal(err.resetAt?.getTime(), NOW + 12_000);
+        return true;
+      },
+    );
+  });
+
+  it('raises LinearRateLimitError for HTTP 429 whose errors[] names no rate limit', async () => {
+    mock.push({ errors: [{ message: 'Too many requests' }] }, { status: 429 });
+
+    await assert.rejects(
+      () => client.teams(),
+      (err: unknown) => err instanceof LinearRateLimitError,
+    );
+  });
+
+  it('prefers Retry-After over the request budget reset header', async () => {
+    mock.push(
+      { errors: [{ message: 'Rate limit exceeded', extensions: { code: 'RATELIMITED' } }] },
+      { status: 429, headers: { 'retry-after': '5', 'x-ratelimit-requests-reset': '1789000000000' } },
+    );
+
+    await assert.rejects(
+      () => client.teams(),
+      (err: unknown) => {
+        assert.ok(err instanceof LinearRateLimitError);
+        assert.equal(err.resetAt?.getTime(), NOW + 5_000);
+        return true;
+      },
+    );
+  });
+
+  it('falls back to the request budget reset header when Retry-After is absent', async () => {
+    mock.push(
+      { errors: [{ message: 'Rate limit exceeded', extensions: { code: 'RATELIMITED' } }] },
+      { status: 429, headers: { 'x-ratelimit-requests-reset': '1789000000000' } },
+    );
+
+    await assert.rejects(
+      () => client.teams(),
+      (err: unknown) => {
+        assert.ok(err instanceof LinearRateLimitError);
+        assert.equal(err.resetAt?.toISOString(), new Date(1789000000000).toISOString());
+        return true;
+      },
+    );
+  });
+
+  it('accepts Retry-After as an HTTP date', async () => {
+    mock.pushRaw('', { status: 429, headers: { 'retry-after': 'Thu, 12 Nov 2026 09:01:00 GMT' } });
+
+    await assert.rejects(
+      () => client.teams(),
+      (err: unknown) => {
+        assert.ok(err instanceof LinearRateLimitError);
+        assert.equal(err.resetAt?.toISOString(), '2026-11-12T09:01:00.000Z');
+        return true;
+      },
+    );
+  });
+
+  it('leaves resetAt undefined when Linear names no time, or an unreadable one', async () => {
+    mock.pushRaw('', { status: 429 });
+    await assert.rejects(
+      () => client.teams(),
+      (err: unknown) => err instanceof LinearRateLimitError && err.resetAt === undefined,
+    );
+
+    mock.pushRaw('', { status: 429, headers: { 'retry-after': 'soon' } });
+    await assert.rejects(
+      () => client.teams(),
+      (err: unknown) => err instanceof LinearRateLimitError && err.resetAt === undefined,
+    );
+  });
+
+  it('still recognises the HTTP 400 + RATELIMITED shape Linear used before', async () => {
     mock.push(
       {
         errors: [
@@ -559,5 +739,79 @@ describe('error mapping', () => {
         return true;
       },
     );
+  });
+});
+
+describe('connection observer', () => {
+  const VIEWER = {
+    data: { viewer: { id: 'u1', name: 'Ada', displayName: 'ada', email: null, active: true } },
+  };
+
+  it('is told when a request succeeds', async () => {
+    mock.push(VIEWER);
+    await client.viewer();
+
+    assert.deepEqual(observed, ['succeeded']);
+  });
+
+  it('is told the refusal when Linear rejects the key', async () => {
+    mock.pushRaw('Unauthorized', { status: 401 });
+    await assert.rejects(() => client.viewer());
+
+    mock.push({ errors: [{ message: 'Authentication required', extensions: { type: 'authentication error' } }] });
+    await assert.rejects(() => client.viewer());
+
+    assert.deepEqual(observed, ['rejected:http_401', 'rejected:protocol_auth_failure']);
+  });
+
+  it('is told nothing for a failure that says nothing about the key', async () => {
+    mock.pushRaw('<html>502 Bad Gateway</html>', { status: 502 });
+    await assert.rejects(() => client.teams());
+
+    mock.pushRaw('', { status: 429 });
+    await assert.rejects(() => client.teams());
+
+    mock.push({ errors: [{ message: 'Field "nope" does not exist' }] });
+    await assert.rejects(() => client.teams());
+
+    mock.pushRaw('not json at all');
+    await assert.rejects(() => client.teams());
+
+    assert.deepEqual(observed, []);
+  });
+
+  it('counts a declined mutation as an accepted key', async () => {
+    mock.push({ data: { commentCreate: { success: false, comment: null } } });
+    await assert.rejects(() => client.addComment('i1', 'x'), LinearMutationError);
+
+    assert.deepEqual(observed, ['succeeded']);
+  });
+
+  it('cannot change the outcome of a request by throwing', async () => {
+    const throwing = createLinearClient({
+      apiKey: API_KEY,
+      fetch: (u, i) => mock.fetch(u, i),
+      observer: {
+        authRejected: () => {
+          throw new Error('observer broke');
+        },
+        succeeded: () => {
+          throw new Error('observer broke');
+        },
+      },
+    });
+
+    mock.push(VIEWER);
+    assert.equal((await throwing.viewer()).id, 'u1');
+
+    mock.pushRaw('Unauthorized', { status: 401 });
+    await assert.rejects(() => throwing.viewer(), LinearAuthError);
+  });
+
+  it('is optional', async () => {
+    const bare = createLinearClient({ apiKey: API_KEY, fetch: (u, i) => mock.fetch(u, i) });
+
+    mock.push(VIEWER);
+    assert.equal((await bare.viewer()).id, 'u1');
   });
 });
