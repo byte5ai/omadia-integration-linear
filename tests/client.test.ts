@@ -9,6 +9,8 @@ import {
   LinearGraphQLError,
   LinearMutationError,
   LinearRateLimitError,
+  LOOKUP_PAGE_SIZE,
+  MAX_LOOKUP_NODES,
   type LinearClient,
 } from '../src/client.js';
 
@@ -86,6 +88,14 @@ function sentHeaders(mock: Mock, n = 0): Record<string, string> {
   return (call.init?.headers ?? {}) as Record<string, string>;
 }
 
+/**
+ * One page of a connection as Linear sends it. With `next`, the page says
+ * that another follows and names the cursor to fetch it with.
+ */
+function connection(nodes: readonly unknown[], next?: string): unknown {
+  return { nodes, pageInfo: { hasNextPage: next !== undefined, endCursor: next ?? null } };
+}
+
 /** The fixed "now" the client is given, so a `Retry-After` wait has a known end. */
 const NOW = Date.UTC(2026, 10, 12, 9, 0, 0);
 
@@ -132,7 +142,7 @@ describe('request shape', () => {
   });
 
   it('passes arguments as GraphQL variables rather than interpolating them', async () => {
-    mock.push({ data: { issues: { nodes: [] } } });
+    mock.push({ data: { issues: connection([]) } });
     await client.searchIssues({ teamKey: 'OMA', stateType: 'started', assigneeId: 'u9', limit: 7 });
 
     const { query, variables } = sentBody(mock);
@@ -151,7 +161,7 @@ describe('request shape', () => {
 describe('lookups', () => {
   it('maps teams', async () => {
     mock.push({
-      data: { teams: { nodes: [{ id: 't1', key: 'OMA', name: 'Omadia' }] } },
+      data: { teams: connection([{ id: 't1', key: 'OMA', name: 'Omadia' }]) },
     });
 
     assert.deepEqual(await client.teams(), [{ id: 't1', key: 'OMA', name: 'Omadia' }]);
@@ -160,13 +170,11 @@ describe('lookups', () => {
   it('narrows workflow states to one team and orders them by position', async () => {
     mock.push({
       data: {
-        workflowStates: {
-          nodes: [
-            { id: 's2', name: 'Done', type: 'completed', position: 2, team: { id: 't1' } },
-            { id: 's1', name: 'Todo', type: 'unstarted', position: 1, team: { id: 't1' } },
-            { id: 's9', name: 'Other', type: 'unstarted', position: 1, team: { id: 't2' } },
-          ],
-        },
+        workflowStates: connection([
+          { id: 's2', name: 'Done', type: 'completed', position: 2, team: { id: 't1' } },
+          { id: 's1', name: 'Todo', type: 'unstarted', position: 1, team: { id: 't1' } },
+          { id: 's9', name: 'Other', type: 'unstarted', position: 1, team: { id: 't2' } },
+        ]),
       },
     });
 
@@ -179,12 +187,10 @@ describe('lookups', () => {
   it('matches users on name, display name and e-mail, case-insensitively', async () => {
     mock.push({
       data: {
-        users: {
-          nodes: [
-            { id: 'u1', name: 'Ada Lovelace', displayName: 'ada', email: 'ada@example.com', active: true },
-            { id: 'u2', name: 'Grace Hopper', displayName: 'grace', email: 'grace@example.com', active: true },
-          ],
-        },
+        users: connection([
+          { id: 'u1', name: 'Ada Lovelace', displayName: 'ada', email: 'ada@example.com', active: true },
+          { id: 'u2', name: 'Grace Hopper', displayName: 'grace', email: 'grace@example.com', active: true },
+        ]),
       },
     });
 
@@ -195,12 +201,10 @@ describe('lookups', () => {
   it('returns every user when no query is given', async () => {
     mock.push({
       data: {
-        users: {
-          nodes: [
-            { id: 'u1', name: 'Ada', displayName: 'ada', email: null, active: true },
-            { id: 'u2', name: 'Grace', displayName: 'grace', email: null, active: false },
-          ],
-        },
+        users: connection([
+          { id: 'u1', name: 'Ada', displayName: 'ada', email: null, active: true },
+          { id: 'u2', name: 'Grace', displayName: 'grace', email: null, active: false },
+        ]),
       },
     });
 
@@ -213,13 +217,11 @@ describe('lookups', () => {
   it('keeps workspace-wide labels when narrowing labels to a team', async () => {
     mock.push({
       data: {
-        issueLabels: {
-          nodes: [
-            { id: 'l1', name: 'bug', team: { id: 't1' } },
-            { id: 'l2', name: 'other-team', team: { id: 't2' } },
-            { id: 'l3', name: 'workspace-wide', team: null },
-          ],
-        },
+        issueLabels: connection([
+          { id: 'l1', name: 'bug', team: { id: 't1' } },
+          { id: 'l2', name: 'other-team', team: { id: 't2' } },
+          { id: 'l3', name: 'workspace-wide', team: null },
+        ]),
       },
     });
 
@@ -227,6 +229,214 @@ describe('lookups', () => {
       { id: 'l1', name: 'bug', teamId: 't1' },
       { id: 'l3', name: 'workspace-wide', teamId: undefined },
     ]);
+  });
+
+  it('maps projects, with their status and dates', async () => {
+    mock.push({
+      data: {
+        projects: connection([
+          {
+            id: 'p1',
+            name: 'Mobile app',
+            url: 'https://linear.app/omadia-dev/project/mobile-app-1',
+            status: { name: 'In Progress', type: 'started' },
+            startDate: '2026-10-01',
+            targetDate: null,
+          },
+        ]),
+      },
+    });
+
+    assert.deepEqual(await client.projects(), [
+      {
+        id: 'p1',
+        name: 'Mobile app',
+        url: 'https://linear.app/omadia-dev/project/mobile-app-1',
+        status: { name: 'In Progress', type: 'started' },
+        startDate: '2026-10-01',
+        targetDate: undefined,
+      },
+    ]);
+  });
+
+  it('asks Linear for the cycles of one team and orders them by number', async () => {
+    const cycle = (number: number, flags: Record<string, boolean>, name: string | null = null) => ({
+      id: `c${String(number)}`,
+      number,
+      name,
+      startsAt: `2026-11-${String(number).padStart(2, '0')}T00:00:00.000Z`,
+      endsAt: `2026-11-${String(number + 1).padStart(2, '0')}T00:00:00.000Z`,
+      isActive: false,
+      isNext: false,
+      isPrevious: false,
+      isFuture: false,
+      ...flags,
+    });
+    mock.push({
+      data: {
+        cycles: connection([
+          cycle(15, { isFuture: true }),
+          cycle(13, { isActive: true }, 'Launch'),
+          cycle(11, {}),
+          // Linear sets both flags on the neighbours of today.
+          cycle(14, { isNext: true, isFuture: true }),
+          cycle(12, { isPrevious: true }),
+        ]),
+      },
+    });
+
+    const cycles = await client.cycles('t1');
+    assert.deepEqual(sentBody(mock).variables['filter'], { team: { id: { eq: 't1' } } });
+    assert.deepEqual(
+      cycles.map((c) => [c.number, c.phase]),
+      [
+        [11, 'past'],
+        [12, 'previous'],
+        [13, 'current'],
+        [14, 'next'],
+        [15, 'future'],
+      ],
+    );
+    assert.equal(cycles[2]?.name, 'Launch');
+    assert.equal(cycles[0]?.name, undefined);
+    assert.equal(cycles[0]?.teamId, 't1');
+  });
+});
+
+describe('lookup pagination', () => {
+  const user = (n: number) => ({
+    id: `u${String(n)}`,
+    name: `Member ${String(n)}`,
+    displayName: `member${String(n)}`,
+    email: null,
+    active: true,
+  });
+  const usersFrom = (start: number, count: number) =>
+    Array.from({ length: count }, (_, i) => user(start + i));
+
+  it('asks for the first page without a cursor', async () => {
+    mock.push({ data: { teams: connection([]) } });
+    await client.teams();
+
+    const { variables } = sentBody(mock);
+    assert.equal(variables['first'], LOOKUP_PAGE_SIZE);
+    assert.ok(!('after' in variables), 'the first page must not name a cursor');
+  });
+
+  it('finds a name that only a later page carries', async () => {
+    mock.push({ data: { users: connection(usersFrom(0, LOOKUP_PAGE_SIZE), 'cursor-1') } });
+    mock.push({ data: { users: connection(usersFrom(LOOKUP_PAGE_SIZE, 30)) } });
+
+    const hits = await client.users('Member 262');
+    assert.deepEqual(hits.map((u) => u.id), ['u262']);
+    assert.equal(mock.calls.length, 2);
+    assert.equal(sentBody(mock, 1).variables['after'], 'cursor-1');
+  });
+
+  it('follows the cursor through every lookup', async () => {
+    const lookups: [string, () => Promise<readonly { id: string }[]>, (id: string) => unknown][] = [
+      ['teams', () => client.teams(), (id) => ({ id, key: id, name: id })],
+      [
+        'workflowStates',
+        () => client.workflowStates('t1'),
+        (id) => ({ id, name: id, type: 'started', position: 1, team: { id: 't1' } }),
+      ],
+      ['issueLabels', () => client.labels('t1'), (id) => ({ id, name: id, team: null })],
+      [
+        'projects',
+        () => client.projects(),
+        (id) => ({
+          id,
+          name: id,
+          url: `https://linear.app/p/${id}`,
+          status: { name: 'Planned', type: 'planned' },
+          startDate: null,
+          targetDate: null,
+        }),
+      ],
+      [
+        'cycles',
+        () => client.cycles('t1'),
+        (id) => ({
+          id,
+          number: id === 'first' ? 1 : 2,
+          name: null,
+          startsAt: '2026-11-01T00:00:00.000Z',
+          endsAt: '2026-11-08T00:00:00.000Z',
+          isActive: false,
+          isNext: false,
+          isPrevious: false,
+          isFuture: false,
+        }),
+      ],
+    ];
+
+    for (const [root, lookup, node] of lookups) {
+      const before = mock.calls.length;
+      mock.push({ data: { [root]: connection([node('first')], 'cursor-1') } });
+      mock.push({ data: { [root]: connection([node('second')]) } });
+
+      const records = await lookup();
+      assert.deepEqual(records.map((r) => r.id), ['first', 'second'], root);
+      assert.equal(sentBody(mock, before + 1).variables['after'], 'cursor-1', root);
+    }
+  });
+
+  it('sends the team filter with every page of cycles', async () => {
+    mock.push({ data: { cycles: connection([], 'cursor-1') } });
+    mock.push({ data: { cycles: connection([]) } });
+    await client.cycles('t1');
+
+    for (const n of [0, 1]) {
+      assert.deepEqual(sentBody(mock, n).variables['filter'], { team: { id: { eq: 't1' } } });
+    }
+  });
+
+  it('fails instead of answering with a part of an oversized collection', async () => {
+    const pages = MAX_LOOKUP_NODES / LOOKUP_PAGE_SIZE;
+    for (let n = 0; n < pages; n += 1) {
+      mock.push({
+        data: { users: connection(usersFrom(n * LOOKUP_PAGE_SIZE, LOOKUP_PAGE_SIZE), `cursor-${String(n)}`) },
+      });
+    }
+
+    await assert.rejects(
+      () => client.users('Member 3'),
+      (err: unknown) => {
+        assert.ok(err instanceof LinearApiError);
+        assert.match(err.message, /more than 5000 records/);
+        return true;
+      },
+    );
+    assert.equal(mock.calls.length, pages, 'must stop asking at the bound');
+  });
+
+  it('returns a collection that ends exactly at the bound', async () => {
+    const pages = MAX_LOOKUP_NODES / LOOKUP_PAGE_SIZE;
+    for (let n = 0; n < pages; n += 1) {
+      const last = n === pages - 1;
+      mock.push({
+        data: {
+          users: connection(
+            usersFrom(n * LOOKUP_PAGE_SIZE, LOOKUP_PAGE_SIZE),
+            last ? undefined : `cursor-${String(n)}`,
+          ),
+        },
+      });
+    }
+
+    assert.equal((await client.users()).length, MAX_LOOKUP_NODES);
+  });
+
+  it('fails when a page announces a successor and names no cursor', async () => {
+    mock.push({
+      data: { teams: { nodes: [], pageInfo: { hasNextPage: true, endCursor: null } } },
+    });
+
+    await assert.rejects(
+      () => client.teams(),
+      (err: unknown) => err instanceof LinearApiError && /without a cursor/.test(err.message),
+    );
   });
 });
 
@@ -243,13 +453,15 @@ const ISSUE_NODE = {
   assignee: { id: 'u1', name: 'Ada Lovelace', displayName: 'ada' },
   team: { id: 't1', key: 'OMA', name: 'Omadia' },
   labels: { nodes: [{ id: 'l1', name: 'bug' }] },
+  project: null,
+  cycle: null,
 };
 
 describe('issues', () => {
   it('maps a search hit into the flat issue shape', async () => {
-    mock.push({ data: { issues: { nodes: [ISSUE_NODE] } } });
+    mock.push({ data: { issues: connection([ISSUE_NODE]) } });
 
-    const [issue] = await client.searchIssues({});
+    const [issue] = (await client.searchIssues({})).issues;
     assert.equal(issue?.identifier, 'OMA-7');
     assert.equal(issue?.title, 'Login is broken');
     assert.equal(issue?.priorityLabel, 'High');
@@ -259,15 +471,60 @@ describe('issues', () => {
     assert.deepEqual(issue?.labels, ['bug']);
   });
 
-  it('reports an unassigned issue as undefined rather than null', async () => {
-    mock.push({ data: { issues: { nodes: [{ ...ISSUE_NODE, assignee: null }] } } });
+  it('maps the project and the cycle of an issue that has them', async () => {
+    mock.push({
+      data: {
+        issues: connection([
+          {
+            ...ISSUE_NODE,
+            project: { id: 'p1', name: 'Mobile app' },
+            cycle: { id: 'c12', number: 12, name: null },
+          },
+        ]),
+      },
+    });
 
-    const [issue] = await client.searchIssues({});
+    const [issue] = (await client.searchIssues({})).issues;
+    assert.deepEqual(issue?.project, { id: 'p1', name: 'Mobile app' });
+    assert.deepEqual(issue?.cycle, { id: 'c12', number: 12, name: undefined });
+  });
+
+  it('reports an issue without project and cycle as undefined for both', async () => {
+    mock.push({ data: { issues: connection([ISSUE_NODE]) } });
+
+    const [issue] = (await client.searchIssues({})).issues;
+    assert.equal(issue?.project, undefined);
+    assert.equal(issue?.cycle, undefined);
+  });
+
+  it('selects project and cycle wherever it selects an issue', async () => {
+    mock.push({ data: { issues: connection([]) } });
+    await client.searchIssues({});
+    mock.push({ data: { searchIssues: connection([]) } });
+    await client.searchIssues({ text: 'login' });
+    mock.push({ data: { issues: { nodes: [] } } });
+    await client.getIssue('OMA-7');
+    mock.push({ data: { issueCreate: { success: true, issue: ISSUE_NODE } } });
+    await client.createIssue({ teamId: 't1', title: 'x' });
+    mock.push({ data: { issueUpdate: { success: true, issue: ISSUE_NODE } } });
+    await client.updateIssue('i1', { stateId: 's2' });
+
+    for (let n = 0; n < mock.calls.length; n += 1) {
+      const { query } = sentBody(mock, n);
+      assert.match(query, /project \{ id name \}/, `request ${String(n)}`);
+      assert.match(query, /cycle \{ id number name \}/, `request ${String(n)}`);
+    }
+  });
+
+  it('reports an unassigned issue as undefined rather than null', async () => {
+    mock.push({ data: { issues: connection([{ ...ISSUE_NODE, assignee: null }]) } });
+
+    const [issue] = (await client.searchIssues({})).issues;
     assert.equal(issue?.assignee, undefined);
   });
 
   it('switches to full-text search when text is given, keeping the filters', async () => {
-    mock.push({ data: { searchIssues: { nodes: [ISSUE_NODE] } } });
+    mock.push({ data: { searchIssues: connection([ISSUE_NODE]) } });
     await client.searchIssues({ text: 'login', teamKey: 'OMA' });
 
     const { query, variables } = sentBody(mock);
@@ -276,8 +533,108 @@ describe('issues', () => {
     assert.deepEqual(variables['filter'], { team: { key: { eq: 'OMA' } } });
   });
 
+  it('sends every filter in the shape Linear\'s issue filter takes', async () => {
+    mock.push({ data: { issues: connection([]) } });
+    await client.searchIssues({
+      teamKey: 'OMA',
+      stateType: 'triage',
+      assigneeId: 'u1',
+      creatorId: 'u2',
+      labelId: 'l1',
+      priority: 1,
+      projectId: 'p1',
+      cycleId: 'c12',
+      createdAt: { from: '2026-11-02', before: '2026-11-09' },
+      updatedAt: { from: '-P7D' },
+      completedAt: { before: '2026-11-09T12:00:00.000Z' },
+    });
+
+    assert.deepEqual(sentBody(mock).variables['filter'], {
+      team: { key: { eq: 'OMA' } },
+      state: { type: { eq: 'triage' } },
+      assignee: { id: { eq: 'u1' } },
+      creator: { id: { eq: 'u2' } },
+      labels: { some: { id: { eq: 'l1' } } },
+      priority: { eq: 1 },
+      project: { id: { eq: 'p1' } },
+      cycle: { id: { eq: 'c12' } },
+      createdAt: { gte: '2026-11-02', lt: '2026-11-09' },
+      updatedAt: { gte: '-P7D' },
+      completedAt: { lt: '2026-11-09T12:00:00.000Z' },
+    });
+  });
+
+  it('filters by priority 0, which is a value and not an absence', async () => {
+    mock.push({ data: { issues: connection([]) } });
+    await client.searchIssues({ priority: 0 });
+
+    assert.deepEqual(sentBody(mock).variables['filter'], { priority: { eq: 0 } });
+  });
+
+  it('sends no filter for a search that names none, an empty time span included', async () => {
+    mock.push({ data: { issues: connection([]) } });
+    await client.searchIssues({ createdAt: {} });
+
+    assert.ok(!('filter' in sentBody(mock).variables));
+  });
+
+  it('applies the filters to a full-text search as well', async () => {
+    mock.push({ data: { searchIssues: connection([]) } });
+    await client.searchIssues({ text: 'login', labelId: 'l1', completedAt: { from: '-P7D' } });
+
+    assert.deepEqual(sentBody(mock).variables['filter'], {
+      labels: { some: { id: { eq: 'l1' } } },
+      completedAt: { gte: '-P7D' },
+    });
+  });
+
+  it('says that a page is the last one', async () => {
+    mock.push({ data: { issues: connection([ISSUE_NODE]) } });
+
+    const page = await client.searchIssues({});
+    assert.equal(page.issues.length, 1);
+    assert.equal(page.nextCursor, undefined);
+    assert.ok(!('after' in sentBody(mock).variables), 'the first page must not name a cursor');
+  });
+
+  it('hands out the cursor of the next page, and fetches that page with it', async () => {
+    mock.push({ data: { issues: connection([ISSUE_NODE], 'cursor-1') } });
+    const first = await client.searchIssues({ teamKey: 'OMA', limit: 1 });
+    assert.equal(first.nextCursor, 'cursor-1');
+
+    mock.push({ data: { issues: connection([{ ...ISSUE_NODE, identifier: 'OMA-8' }]) } });
+    const second = await client.searchIssues({ teamKey: 'OMA', limit: 1, cursor: 'cursor-1' });
+
+    const { variables } = sentBody(mock, 1);
+    assert.equal(variables['after'], 'cursor-1');
+    assert.deepEqual(variables['filter'], { team: { key: { eq: 'OMA' } } });
+    assert.deepEqual(second.issues.map((i) => i.identifier), ['OMA-8']);
+    assert.equal(second.nextCursor, undefined);
+  });
+
+  it('pages a full-text search the same way', async () => {
+    mock.push({ data: { searchIssues: connection([ISSUE_NODE], 'cursor-1') } });
+    const first = await client.searchIssues({ text: 'login' });
+    assert.equal(first.nextCursor, 'cursor-1');
+
+    mock.push({ data: { searchIssues: connection([]) } });
+    await client.searchIssues({ text: 'login', cursor: 'cursor-1' });
+    assert.equal(sentBody(mock, 1).variables['after'], 'cursor-1');
+  });
+
+  it('fails when a search page announces a successor and names no cursor', async () => {
+    mock.push({
+      data: { issues: { nodes: [ISSUE_NODE], pageInfo: { hasNextPage: true, endCursor: null } } },
+    });
+
+    await assert.rejects(
+      () => client.searchIssues({}),
+      (err: unknown) => err instanceof LinearApiError && /without a cursor/.test(err.message),
+    );
+  });
+
   it('caps the result limit so one lookup cannot flood the model context', async () => {
-    mock.push({ data: { issues: { nodes: [] } } });
+    mock.push({ data: { issues: connection([]) } });
     await client.searchIssues({ limit: 5000 });
 
     assert.equal(sentBody(mock).variables['first'], 100);

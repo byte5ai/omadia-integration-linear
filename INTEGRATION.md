@@ -18,7 +18,7 @@ without redefining them; that document is not shipped in the plugin package.
 | `linear.api` | `LinearClient` | The Linear API capability: reads plus the three writes |
 
 The capability is versioned major-only: the connection declares
-`provides: ["linear.api@1"]`, a consumer declares `requires: ["linear.api@^1"]`.
+`provides: ["linear.api@2"]`, a consumer declares `requires: ["linear.api@^2"]`.
 
 ## Consumption pattern
 
@@ -31,7 +31,7 @@ secret chain resolve.
 depends_on:
   - "@omadia/integration-linear"
 requires:
-  - "linear.api@^1"
+  - "linear.api@^2"
 ```
 
 ```typescript
@@ -40,7 +40,7 @@ import type { LinearClient } from '@omadia/integration-linear';
 const linear = ctx.services.get<LinearClient>('linear.api');
 if (!linear) {
   throw new Error(
-    "linear.api unavailable — declare requires: ['linear.api@^1'] and install " +
+    "linear.api unavailable — declare requires: ['linear.api@^2'] and install " +
       '@omadia/integration-linear',
   );
 }
@@ -83,7 +83,14 @@ interface LinearClient {
   /** Labels of one team plus the workspace-wide ones, or all labels. */
   labels(teamId?: string): Promise<LinearLabel[]>;
 
-  searchIssues(input: SearchIssuesInput): Promise<LinearIssue[]>;
+  /** Every project of the workspace that is not archived. */
+  projects(): Promise<LinearProject[]>;
+
+  /** Cycles of one team, ordered by number. */
+  cycles(teamId: string): Promise<LinearCycle[]>;
+
+  /** One page of issues, most recently updated first; by relevance with `text`. */
+  searchIssues(input: SearchIssuesInput): Promise<LinearIssuePage>;
 
   /** By key (`OMA-7`) or by id. `undefined` when there is no such issue. */
   getIssue(keyOrId: string): Promise<LinearIssueDetail | undefined>;
@@ -134,6 +141,44 @@ interface LinearIssueRef {
   readonly displayName: string;
 }
 
+type LinearProjectStatusType =
+  | 'backlog' | 'planned' | 'started' | 'paused' | 'completed' | 'canceled';
+
+interface LinearProject {
+  readonly id: string;
+  readonly name: string;
+  readonly url: string;
+  readonly status: {
+    readonly name: string;                  // the workspace's own wording
+    readonly type: LinearProjectStatusType;
+  };
+  readonly startDate: string | undefined;   // 'YYYY-MM-DD'
+  readonly targetDate: string | undefined;  // 'YYYY-MM-DD'
+}
+
+type LinearCyclePhase = 'past' | 'previous' | 'current' | 'next' | 'future';
+
+interface LinearCycle {
+  readonly id: string;
+  readonly number: number;                  // counts up per team
+  readonly name: string | undefined;        // undefined = shown as 'Cycle 12'
+  readonly startsAt: string;                // ISO-8601
+  readonly endsAt: string;
+  readonly phase: LinearCyclePhase;
+  readonly teamId: string;
+}
+
+interface LinearProjectRef {
+  readonly id: string;
+  readonly name: string;
+}
+
+interface LinearCycleRef {
+  readonly id: string;
+  readonly number: number;
+  readonly name: string | undefined;
+}
+
 interface LinearIssue {
   readonly id: string;
   readonly identifier: string;              // 'OMA-7' — the key users say
@@ -151,6 +196,8 @@ interface LinearIssue {
   readonly assignee: LinearIssueRef | undefined;
   readonly team: LinearTeam;
   readonly labels: readonly string[];       // label NAMES, not ids
+  readonly project: LinearProjectRef | undefined;
+  readonly cycle: LinearCycleRef | undefined;
 }
 
 interface LinearComment {
@@ -166,12 +213,31 @@ interface LinearIssueDetail extends LinearIssue {
   readonly comments: readonly LinearComment[];
 }
 
+interface LinearDateRange {
+  readonly from?: string;                   // at or after this moment
+  readonly before?: string;                 // before this moment
+}
+
 interface SearchIssuesInput {
   readonly teamKey?: string;                // 'OMA', not the team id
   readonly stateType?: LinearWorkflowStateType;
   readonly assigneeId?: string;
+  readonly creatorId?: string;
+  readonly labelId?: string;                // issues that carry this label
+  readonly priority?: number;               // 0 none, 1 urgent … 4 low
+  readonly projectId?: string;
+  readonly cycleId?: string;
+  readonly createdAt?: LinearDateRange;
+  readonly updatedAt?: LinearDateRange;
+  readonly completedAt?: LinearDateRange;   // completed issues only
   readonly text?: string;                   // switches to full-text search
   readonly limit?: number;                  // default 25, hard cap 100
+  readonly cursor?: string;                 // nextCursor of the page before
+}
+
+interface LinearIssuePage {
+  readonly issues: readonly LinearIssue[];
+  readonly nextCursor: string | undefined;  // undefined = last page
 }
 
 interface CreateIssueInput {
@@ -195,24 +261,53 @@ interface UpdateIssueInput {
 ```
 
 Exported constants: `LINEAR_GRAPHQL_ENDPOINT`, `DEFAULT_ISSUE_LIMIT` (25),
-`MAX_ISSUE_LIMIT` (100), `MAX_COMMENTS` (100), `MAX_LOOKUP_NODES` (250).
+`MAX_ISSUE_LIMIT` (100), `MAX_COMMENTS` (100), `LOOKUP_PAGE_SIZE` (250),
+`MAX_LOOKUP_NODES` (5,000).
 
 ## Behaviour that is not obvious from the signatures
 
 - **`searchIssues` runs one of two queries.** With `text`, it uses Linear's
-  full-text search and applies the other fields as a filter. Without `text`, it
-  lists issues by the same filter, most recently updated first. Both clamp
-  `limit` to 100 — a lookup feeds a model context, and an unbounded one is a
-  context overflow waiting for a busy team.
+  full-text search and applies the other fields as a filter; Linear orders
+  those results by relevance and allows 30 such searches per minute. Without
+  `text`, it lists issues by the same filter, most recently updated first.
+  Both clamp `limit` to 100 — a search feeds a model context, and an unbounded
+  one is a context overflow waiting for a busy team.
+- **`searchIssues` returns one page and says whether there is another.**
+  `nextCursor` is set whenever Linear holds more matches than the page
+  carries. Send it back as `cursor`, with every other field unchanged, for the
+  page after. A cursor used with different filters pages through a different
+  list.
+- **The filter fields combine with "and".** `labelId` matches issues that
+  carry that label among others. `completedAt` matches completed issues only:
+  a canceled issue has no completion time and is found by
+  `stateType: 'canceled'` with `updatedAt`.
+- **A bound of a `LinearDateRange` is one of three things:** an ISO-8601
+  timestamp, a `YYYY-MM-DD` date (midnight UTC), or a duration counted from
+  the moment the query runs — `-P7D` is seven days ago, `-P2W` two weeks,
+  `-P1M` a month. `from` is inclusive, `before` exclusive, so
+  `{ from: '2026-11-02', before: '2026-11-09' }` is exactly that week. The
+  client sends a bound as given; a value Linear cannot read comes back as a
+  `LinearGraphQLError`.
 - **`getIssue` accepts both forms and never throws for "not found".** A key is
   resolved deterministically as team key plus issue number; anything else is
   treated as an id. A miss is `undefined`, not an error.
-- **`workflowStates`, `users` and `labels` filter client-side.** They fetch up
-  to `MAX_LOOKUP_NODES` and narrow in process. These are workspace-scale
-  collections (tens, not thousands). A workspace that outgrows 250 states,
-  users or labels needs real pagination here — a lookup that quietly saw only
-  the first page would resolve a name to the wrong id, so treat that as a bug
-  to fix rather than a limit to live with.
+- **Every lookup reads its collection to the end.** `teams`,
+  `workflowStates`, `users`, `labels`, `projects` and `cycles` follow Linear's
+  cursor in pages of `LOOKUP_PAGE_SIZE` until nothing is left, so a name on a
+  later page resolves like one on the first. A collection of more than
+  `MAX_LOOKUP_NODES` records fails with a `LinearApiError` instead of coming
+  back in part: a lookup that saw only some of the records would resolve a
+  name to the wrong id.
+- **`workflowStates`, `users` and `labels` narrow in process**, after reading
+  the workspace's whole collection. `cycles` is narrowed to its team by
+  Linear, because the cycles of a workspace grow with every week it exists.
+- **`cycles` tells where each cycle stands today.** `phase` is `current` for
+  the cycle that is running. A team between two cycles, or one that does not
+  use cycles, has no current one. `previous` and `next` are today's two
+  neighbours.
+- **`projects` is workspace-wide.** A project can span teams, so there is no
+  team argument. Archived projects are left out; completed and canceled ones
+  are listed, and `status.type` tells them apart.
 - **`labels(teamId)` keeps workspace-wide labels.** A label with no team is
   usable on every team's issues, so narrowing to a team must not drop it.
 - **`updateIssue` sends only the keys you set.** An omitted key leaves the
@@ -332,12 +427,39 @@ await linear.updateIssue(issue.id, { stateId: done.id });
 
 ```typescript
 const me = await linear.viewer();
-const open = await linear.searchIssues({
+const { issues: open } = await linear.searchIssues({
   teamKey: 'OMA',
   assigneeId: me.id,
   stateType: 'started',
   limit: 20,
 });
+```
+
+"What did we complete in the last seven days?", every page of it:
+
+```typescript
+const filter: SearchIssuesInput = {
+  teamKey: 'OMA',
+  completedAt: { from: '-P7D' },
+  limit: 50,
+};
+
+const completed: LinearIssue[] = [];
+let page = await linear.searchIssues(filter);
+completed.push(...page.issues);
+while (page.nextCursor !== undefined) {
+  page = await linear.searchIssues({ ...filter, cursor: page.nextCursor });
+  completed.push(...page.issues);
+}
+```
+
+"What is in the current cycle?":
+
+```typescript
+const current = (await linear.cycles(team.id)).find((c) => c.phase === 'current');
+if (!current) throw new Error('team OMA has no cycle running');
+
+const { issues } = await linear.searchIssues({ teamKey: 'OMA', cycleId: current.id });
 ```
 
 Create an issue from free text:
@@ -355,19 +477,23 @@ const created = await linear.createIssue({
 ## What this does not do
 
 - ❌ **No delete and no archive.** Out of scope by decision, not by oversight.
-- ❌ **No project, cycle, estimate or parent edits.** The editable set is
-  exactly: state, assignee, priority, title, description, labels.
+- ❌ **No project, cycle, estimate or parent edits.** Projects and cycles can
+  be read and filtered by. The editable set is exactly: state, assignee,
+  priority, title, description, labels.
 - ❌ **No documents, attachments, initiatives or customers.**
 - ❌ **No Push.** The connection has no routes and claims no public paths;
   Linear cannot call into omadia through it.
 - ❌ **No per-user identity.** Every call acts as the key's owner, so an issue
   created through omadia is attributed to that one person. Per-user attribution
   needs OAuth.
-- ⚠️ **No pagination anywhere.** Every method returns one bounded page.
-
 ## Versioning
 
 Adding a method or an optional input field is non-breaking and stays at
-`linear.api@1`. Removing a method, renaming a field, or changing what a method
-returns is a major event: bump to `linear.api@2` in `provides:` and in this
+`linear.api@2`. Removing a method, renaming a field, or changing what a method
+returns is a major event: bump to `linear.api@3` in `provides:` and in this
 file, and expect every consumer's `requires:` to need the same bump.
+
+`linear.api@2` differs from `linear.api@1` in one return type: `searchIssues`
+answers with a `LinearIssuePage` where it answered with a `LinearIssue[]`.
+Everything else that is new (`projects`, `cycles`, the added filter fields,
+`project` and `cycle` on an issue) is an addition.

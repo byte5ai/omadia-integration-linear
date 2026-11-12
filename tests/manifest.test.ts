@@ -64,7 +64,7 @@ describe('manifest.yaml ↔ code', () => {
   });
 
   it('provides the capability name the plugin registers', () => {
-    assert.deepEqual(listItems('provides'), [`${LINEAR_API_SERVICE_NAME}@1`]);
+    assert.deepEqual(listItems('provides'), [`${LINEAR_API_SERVICE_NAME}@2`]);
   });
 
   it('names the client type a builder agent would look up', () => {

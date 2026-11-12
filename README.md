@@ -1,7 +1,7 @@
 # @omadia/integration-linear
 
 The **Linear connection** for omadia: it holds the credential for one Linear
-workspace and publishes the **Linear API capability** (`linear.api@1`) so other
+workspace and publishes the **Linear API capability** (`linear.api@2`) so other
 plugins can read and change issues without ever seeing the key.
 
 This is one half of the Linear Integration. The other half is
@@ -147,8 +147,9 @@ written down rather than left as a surprise:
 
 ## Scope
 
-**In:** issue read, search, create, update, comment; lookups for teams,
-workflow states, users and labels.
+**In:** issue read, search by filter and page by page, create, update,
+comment; lookups for teams, workflow states, users, labels, projects and
+cycles.
 
 **Out:** delete/archive; project, cycle, estimate and parent edits; documents,
 attachments, initiatives, customers; Push (Linear → omadia); per-user identity

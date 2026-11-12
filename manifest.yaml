@@ -4,7 +4,7 @@ schema_version: "1"
 # @omadia/integration-linear — the Linear connection
 # ---------------------------------------------------------------------------
 # A `kind: integration` plugin: it holds the credential for one Linear
-# workspace and publishes the Linear API capability `linear.api@1`. It carries
+# workspace and publishes the Linear API capability `linear.api@2`. It carries
 # no toolkit, no prompt and no routes — the Linear agent
 # (`@omadia/agent-linear`) consumes the capability and owns the tools.
 #
@@ -19,7 +19,7 @@ identity:
   kind: "integration"
   domain: "linear"
   name: "Linear"
-  version: "0.2.0" # === package.json "version"
+  version: "0.3.0" # === package.json "version"
   # Locale map, not a bare string (#885): a bare string is read as English, so
   # German in this slot would surface as the English description in the Hub.
   description:
@@ -77,9 +77,9 @@ setup:
 
 # The Linear API capability (CONTEXT.md). Provider-side name + major must
 # match what `ctx.services.provide` registers; consumers declare
-# `requires: ["linear.api@^1"]`.
+# `requires: ["linear.api@^2"]`.
 provides:
-  - "linear.api@1"
+  - "linear.api@2"
 
 # Lets a builder agent discover the method-bearing type behind the service
 # instead of guessing it. Same convention as integration-odoo.
@@ -107,7 +107,7 @@ permissions:
 integrations:
   - id: "linear_graphql"
     kind: "http"
-    target: "Linear GraphQL API (POST https://api.linear.app/graphql) — issue reads plus issue/comment writes"
+    target: "Linear GraphQL API (POST https://api.linear.app/graphql) — issue, project and cycle reads plus issue/comment writes"
     auth_from: "linear_api_key"
     docs: "https://linear.app/developers/graphql"
 

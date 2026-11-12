@@ -14,8 +14,8 @@ import {
  * whole job is to hold the credential for one Linear workspace and publish the
  * Linear API capability, which `@omadia/agent-linear` consumes:
  *
- *     provides: ["linear.api@1"]        →  ctx.services.provide('linear.api', client)
- *     requires: ["linear.api@^1"]       →  ctx.services.get<LinearClient>('linear.api')
+ *     provides: ["linear.api@2"]        →  ctx.services.provide('linear.api', client)
+ *     requires: ["linear.api@^2"]       →  ctx.services.get<LinearClient>('linear.api')
  *
  * The credential never leaves this package: the agent plugin declares
  * `depends_on: ["@omadia/integration-linear"]` and reaches Linear only through
@@ -99,6 +99,7 @@ export {
   LinearGraphQLError,
   LinearMutationError,
   LinearRateLimitError,
+  LOOKUP_PAGE_SIZE,
   MAX_COMMENTS,
   MAX_ISSUE_LIMIT,
   MAX_LOOKUP_NODES,
@@ -111,11 +112,19 @@ export type {
   LinearClientOptions,
   LinearComment,
   LinearConnectionObserver,
+  LinearCycle,
+  LinearCyclePhase,
+  LinearCycleRef,
+  LinearDateRange,
   LinearGraphQLErrorEntry,
   LinearIssue,
   LinearIssueDetail,
+  LinearIssuePage,
   LinearIssueRef,
   LinearLabel,
+  LinearProject,
+  LinearProjectRef,
+  LinearProjectStatusType,
   LinearTeam,
   LinearUser,
   LinearWorkflowState,
