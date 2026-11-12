@@ -46,8 +46,13 @@ if (!linear) {
 }
 ```
 
-`package.json` of the consumer must carry
-`"@omadia/integration-linear": "*"` under `peerDependencies`.
+The import is for types only; nothing of this package is loaded at runtime.
+So `package.json` of the consumer lists it nowhere: resolve the types at build
+time, for example with a `paths` entry in `tsconfig.json` that points at this
+package's `dist/plugin.d.ts`. Do **not** add it to `peerDependencies`. The
+host's upload check compares that list with its own packages only, so a
+sibling plugin named there is reported to the operator as a missing
+dependency on every upload, however correctly it is installed.
 
 Two rules that fail silently rather than loudly if you break them:
 
