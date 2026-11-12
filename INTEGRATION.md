@@ -188,6 +188,8 @@ interface LinearIssue {
   readonly priorityLabel: string;           // 'High'
   readonly createdAt: string;               // ISO-8601
   readonly updatedAt: string;
+  readonly completedAt: string | undefined; // entered a completed state; undefined while not in one
+  readonly canceledAt: string | undefined;  // entered a canceled/duplicate state; same rule
   readonly state: {
     readonly id: string;
     readonly name: string;

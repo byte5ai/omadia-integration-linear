@@ -253,6 +253,10 @@ export interface LinearIssue {
   readonly priorityLabel: string;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** When the issue entered a completed state; `undefined` while it is not in one. */
+  readonly completedAt: string | undefined;
+  /** When the issue entered a canceled (or duplicate) state; `undefined` while it is not in one. */
+  readonly canceledAt: string | undefined;
   readonly state: { readonly id: string; readonly name: string; readonly type: LinearWorkflowStateType };
   readonly assignee: LinearIssueRef | undefined;
   readonly team: LinearTeam;
@@ -422,6 +426,8 @@ const ISSUE_FIELDS = `
     priorityLabel
     createdAt
     updatedAt
+    completedAt
+    canceledAt
     state { id name type }
     assignee { id name displayName }
     team { id key name }
@@ -555,6 +561,8 @@ interface RawIssue {
   priorityLabel: string;
   createdAt: string;
   updatedAt: string;
+  completedAt: string | null;
+  canceledAt: string | null;
   state: { id: string; name: string; type: LinearWorkflowStateType };
   assignee: RawRef | null;
   team: LinearTeam;
@@ -650,6 +658,8 @@ function toIssue(raw: RawIssue): LinearIssue {
     priorityLabel: raw.priorityLabel,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
+    completedAt: raw.completedAt ?? undefined,
+    canceledAt: raw.canceledAt ?? undefined,
     state: raw.state,
     assignee: raw.assignee ? toRef(raw.assignee) : undefined,
     team: raw.team,

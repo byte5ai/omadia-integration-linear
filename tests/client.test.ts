@@ -449,6 +449,8 @@ const ISSUE_NODE = {
   priorityLabel: 'High',
   createdAt: '2026-09-01T10:00:00.000Z',
   updatedAt: '2026-09-02T10:00:00.000Z',
+  completedAt: null,
+  canceledAt: null,
   state: { id: 's1', name: 'Todo', type: 'unstarted' },
   assignee: { id: 'u1', name: 'Ada Lovelace', displayName: 'ada' },
   team: { id: 't1', key: 'OMA', name: 'Omadia' },
@@ -458,6 +460,29 @@ const ISSUE_NODE = {
 };
 
 describe('issues', () => {
+  it('reports when an issue was completed or canceled, and nothing while it is open', async () => {
+    mock.push({
+      data: {
+        issues: connection([
+          ISSUE_NODE,
+          { ...ISSUE_NODE, id: 'i2', completedAt: '2026-11-12T15:55:49.337Z' },
+          { ...ISSUE_NODE, id: 'i3', canceledAt: '2026-11-10T09:00:00.000Z' },
+        ]),
+      },
+    });
+
+    const { issues } = await client.searchIssues({});
+    assert.deepEqual(
+      issues.map((i) => [i.completedAt, i.canceledAt]),
+      [
+        [undefined, undefined],
+        ['2026-11-12T15:55:49.337Z', undefined],
+        [undefined, '2026-11-10T09:00:00.000Z'],
+      ],
+    );
+    assert.match(sentBody(mock).query, /\bcompletedAt\b[\s\S]*\bcanceledAt\b/);
+  });
+
   it('maps a search hit into the flat issue shape', async () => {
     mock.push({ data: { issues: connection([ISSUE_NODE]) } });
 

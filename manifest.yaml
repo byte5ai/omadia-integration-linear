@@ -19,7 +19,7 @@ identity:
   kind: "integration"
   domain: "linear"
   name: "Linear"
-  version: "0.3.0" # === package.json "version"
+  version: "0.3.1" # === package.json "version"
   # Locale map, not a bare string (#885): a bare string is read as English, so
   # German in this slot would surface as the English description in the Hub.
   description:
