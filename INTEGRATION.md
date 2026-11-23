@@ -322,7 +322,8 @@ Exported constants: `LINEAR_GRAPHQL_ENDPOINT`, `DEFAULT_ISSUE_LIMIT` (25),
   `completed` or `canceled`; Linear has no close operation.
 - **These three writes mutate Linear immediately.** The
   prepared-write/preview/commit flow that fronts them for users belongs in the
-  consuming agent, not here — this layer has no conversation to preview into.
+  consuming plugin (`@omadia/plugin-linear`), not here — this layer has no
+  conversation to preview into.
 
 ## Connection status
 

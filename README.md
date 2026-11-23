@@ -5,11 +5,12 @@ workspace and publishes the **Linear API capability** (`linear.api@2`) so other
 plugins can read and change issues without ever seeing the key.
 
 This is one half of the Linear Integration. The other half is
-`@omadia/agent-linear`, which carries the tools and the prompt and consumes
-this capability. This package has no tools, no prompt and no routes.
+[`@omadia/plugin-linear`](https://github.com/byte5ai/omadia-plugin-linear),
+which carries the Linear tools and agent templates and consumes this
+capability. This package has no tools, no prompt and no routes.
 
-- **Install, use, known limits, troubleshooting**: the agent's README
-  (`@omadia/agent-linear`) — install this package first, then the agent.
+- **Install, use, known limits, troubleshooting**: the README of
+  `@omadia/plugin-linear` — install this package first, then the tools.
 - **Client contract** (what consumers read): [INTEGRATION.md](./INTEGRATION.md)
 - **Vocabulary**: `CONTEXT.md` in the source repository (not shipped in the
   plugin package — the zip carries only runtime artefacts)

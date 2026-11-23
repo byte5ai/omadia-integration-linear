@@ -1,5 +1,5 @@
 {
-  // Declaration-only emit for consumers. `@omadia/agent-linear` points its
+  // Declaration-only emit for consumers. `@omadia/plugin-linear` points its
   // tsconfig `paths` at the `dist/*.d.ts` this produces, the same way the
   // channel packages point at the adjacent core checkout's built dist.
   // The runtime JS comes from esbuild (scripts/build-zip.mjs), not tsc —

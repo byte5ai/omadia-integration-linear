@@ -9,7 +9,7 @@
  *
  * Everything here is LLM-free and host-free: the only thing it needs from the
  * outside is a `fetch`. That is what makes it testable against a mock and what
- * keeps the tool layer (in `@omadia/agent-linear`) from having to know
+ * keeps the tool layer (in `@omadia/plugin-linear`) from having to know
  * anything about GraphQL.
  *
  * The exported surface is the Linear API capability's contract — see

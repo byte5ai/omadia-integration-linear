@@ -14,7 +14,7 @@ import { LINEAR_API_SERVICE_NAME } from '../src/plugin.js';
  * a permanently mislabelled artefact (hub versions are immutable), an entry
  * that disagrees with the build produces a plugin core cannot start, and a
  * `provides:` name that disagrees with `ctx.services.provide` produces a
- * capability the Linear agent can never resolve — all three with no error
+ * capability the Linear tools can never resolve — all three with no error
  * until install time.
  *
  * Line-oriented on purpose rather than a YAML parse: the package has zero

@@ -22,7 +22,7 @@
  *
  * ## Why declarations are emitted separately
  *
- * esbuild does not produce `.d.ts`. `@omadia/agent-linear` points its tsconfig
+ * esbuild does not produce `.d.ts`. `@omadia/plugin-linear` points its tsconfig
  * `paths` at `dist/plugin.d.ts`, so without step 2 the consumer would compile
  * against nothing. tsc emits declarations only — the runtime JS comes from
  * esbuild, and having two emitters for the same file would be a drift source.

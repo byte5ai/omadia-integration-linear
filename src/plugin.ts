@@ -12,7 +12,7 @@ import {
  *
  * A `kind: integration` plugin, so it contributes no tools and no prompt. Its
  * whole job is to hold the credential for one Linear workspace and publish the
- * Linear API capability, which `@omadia/agent-linear` consumes:
+ * Linear API capability, which `@omadia/plugin-linear` consumes:
  *
  *     provides: ["linear.api@2"]        →  ctx.services.provide('linear.api', client)
  *     requires: ["linear.api@^2"]       →  ctx.services.get<LinearClient>('linear.api')

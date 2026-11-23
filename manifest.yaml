@@ -5,8 +5,8 @@ schema_version: "1"
 # ---------------------------------------------------------------------------
 # A `kind: integration` plugin: it holds the credential for one Linear
 # workspace and publishes the Linear API capability `linear.api@2`. It carries
-# no toolkit, no prompt and no routes — the Linear agent
-# (`@omadia/agent-linear`) consumes the capability and owns the tools.
+# no toolkit, no prompt and no routes — the Linear tools
+# (`@omadia/plugin-linear`) consume the capability.
 #
 # Sources of truth (do not guess):
 #   Runtime contract  omadia/middleware/packages/plugin-api/src/pluginContext.ts
